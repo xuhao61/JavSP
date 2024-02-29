@@ -1,17 +1,24 @@
 """解析Chromium系浏览器Cookies的相关函数"""
 import os
+import sys
 import json
 import base64
 import sqlite3
+import logging
 from glob import glob
 from shutil import copyfile
 from datetime import datetime
 
-import win32crypt
+__all__ = ['get_browsers_cookies']
+
+
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from Crypto.Cipher import AES
 
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+import core.config   # to init the logging module
 
-__all__ = ['get_browsers_cookies']
+logger = logging.getLogger(__name__)
 
 
 class Decrypter():
@@ -39,6 +46,7 @@ def get_browsers_cookies():
     }
     LocalAppDataDir = os.getenv('LOCALAPPDATA')
     all_browser_cookies = []
+    exceptions = []
     for brw, path in user_data_dirs.items():
         user_dir = LocalAppDataDir + path
         cookies_files = glob(user_dir+'/*/Cookies') + glob(user_dir+'/*/Network/Cookies')
@@ -48,12 +56,19 @@ def get_browsers_cookies():
             decrypter = Decrypter(key)
             for file in cookies_files:
                 profile = brw + ": " + file.split('User Data')[1].split(os.sep)[1]
-                records = get_cookies(file, decrypter)
-                if records:
-                    # 将records转换为便于使用的格式
-                    for site, cookies in records.items():
-                        entry = {'profile': profile, 'site': site, 'cookies': cookies}
-                        all_browser_cookies.append(entry)
+                file = os.path.normpath(file)
+                try:
+                    records = get_cookies(file, decrypter)
+                    if records:
+                        # 将records转换为便于使用的格式
+                        for site, cookies in records.items():
+                            entry = {'profile': profile, 'site': site, 'cookies': cookies}
+                            all_browser_cookies.append(entry)
+                except Exception as e:
+                    exceptions.append(e)
+                    logger.debug(f"无法解析Cookies文件({e}): {file}", exc_info=True)
+    if len(all_browser_cookies) == 0 and len(exceptions) > 0:
+        raise exceptions[0]
     return all_browser_cookies
 
 
@@ -61,20 +76,23 @@ def convert_chrome_utc(chrome_utc):
     """将Chrome存储的UTC时间转换为UNIX的UTC时间格式"""
     # Chrome's cookies timestamp's epoch starts 1601-01-01T00:00:00Z
     second = int(chrome_utc / 1e6)
-    unix_utc = datetime.fromtimestamp(second - 11644473600)
+    if second > 0:  # 考虑chrome_utc为0的情况
+        second = second - 11644473600
+    unix_utc = datetime.fromtimestamp(second)
     return unix_utc
 
-
 def decrypt_key(local_state):
-    """从Local State文件中提取并解密出Cookies文件的密钥"""
-    # Chrome 80+ 的Cookies解密方法参考自: https://stackoverflow.com/a/60423699/6415337
+    """从Local State文件中提取并解密出Cookies文件的密钥，适用于Linux"""
+    # 读取Local State文件中的密钥
     with open(local_state, 'rt', encoding='utf-8') as file:
         encrypted_key = json.loads(file.read())['os_crypt']['encrypted_key']
-    encrypted_key = base64.b64decode(encrypted_key)                                       # Base64 decoding
-    encrypted_key = encrypted_key[5:]                                                     # Remove DPAPI
-    decrypted_key = win32crypt.CryptUnprotectData(encrypted_key, None, None, None, 0)[1]  # Decrypt key
+    encrypted_key = base64.b64decode(encrypted_key)
+    encrypted_key = encrypted_key[5:]
+    key = encrypted_key
+    nonce = b' ' * 12
+    aesgcm = AESGCM(key)
+    decrypted_key = aesgcm.decrypt(nonce, encrypted_key, None)
     return decrypted_key
-
 
 def get_cookies(cookies_file, decrypter, host_pattern='javdb%.com'):
     """从cookies_file文件中查找指定站点的所有Cookies"""

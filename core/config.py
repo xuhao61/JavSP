@@ -1,12 +1,14 @@
 import os
 import re
 import sys
+import getpass
 import logging
 import argparse
 import configparser
 from shutil import copyfile
 from string import Template
 
+from .lib import re_escape
 
 __all__ = ['cfg', 'args', 'is_url']
 
@@ -74,6 +76,14 @@ class DetailedFormatter(logging.Formatter):
     def __init__(self, fmt='%(asctime)s %(name)s:%(lineno)d %(levelname)s: %(message)s',
                  datefmt='%Y-%m-%d %H:%M:%S', *args) -> None:
         super().__init__(fmt, datefmt, *args)
+        username = getpass.getuser()
+        self.anonymize = re.compile(r'([\\/]*)' + re_escape(username) + '([\\/]*)', flags=re.I)
+
+    def format(self, record):
+        raw = super().format(record)
+        s = self.anonymize.sub(r'\1javsp\2', raw)
+        return s
+
     def formatException(self, ei):
         s = super().formatException(ei)
         # ei[1] 是异常的实例，从中提取除了异常的message外的其他参数
@@ -223,7 +233,9 @@ def norm_int(cfg: Config):
     cfg.Network.retry = cfg.getint('Network', 'retry')
     cfg.Network.timeout = cfg.getint('Network', 'timeout')
     cfg.NamingRule.max_path_len = min(cfg.getint('NamingRule', 'max_path_len'), 256)
-    cfg.NamingRule.max_acctress_count = max(cfg.getint('NamingRule', 'max_acctress_count'), 1)
+    cfg.NamingRule.max_actress_count = max(cfg.getint('NamingRule', 'max_actress_count'), 1)
+    cfg.File.ignore_video_file_less_than = int(cfg.getfloat('File', 'ignore_video_file_less_than') * 2**20)
+    cfg.Crawler.sleep_after_scraping = max(cfg.getint('Crawler', 'sleep_after_scraping'), 0)
 
 
 def norm_tuples(cfg: Config):
@@ -257,6 +269,13 @@ def norm_boolean(cfg: Config):
             ('Other', 'auto_update')
         ]:
         cfg._sections[sec][key] = cfg.getboolean(sec, key)
+    # 特殊转换
+    sec, key = 'NamingRule', 'calc_path_len_by_byte'
+    try:
+        cfg._sections[sec][key] = cfg.getboolean(sec, key)
+    except ValueError:
+        # 当配置为auto时会转换失败，此时保留auto配置以待后面根据文件系统来作更新
+        cfg._sections[sec][key] = cfg._sections[sec][key].lower()
 
 
 def norm_ignore_pattern(cfg: Config):
@@ -273,7 +292,7 @@ def norm_ignore_pattern(cfg: Config):
 
 def validate_media_servers(cfg: Config):
     """获取媒体服务器配置并验证有效性"""
-    supported = set(('plex', 'emby', 'jellyfin', 'kodi', 'video_station'))
+    supported = set(('universal', 'plex', 'emby', 'jellyfin', 'kodi', 'video_station'))
     servers = cfg.NamingRule.media_servers.lower()
     items = set(re.split(r'[^\w_]+', servers, flags=re.I))
     cfg.NamingRule.media_servers = items & supported
@@ -346,6 +365,11 @@ def convert_naming_rule(cfg: Config):
     cfg.NamingRule.save_dir = Template(combine)
     cfg.NamingRule.filename = Template(cfg.NamingRule.filename)
     cfg.NamingRule.nfo_title = Template(cfg.NamingRule.nfo_title)
+    cfg.NamingRule.censorship_names = {
+        False: cfg.NamingRule.text_for_censored,
+        True: cfg.NamingRule.text_for_uncensored,
+        None: cfg.NamingRule.text_for_unknown_censorship,
+    }
 
 
 def check_proxy_free_url(cfg: Config):

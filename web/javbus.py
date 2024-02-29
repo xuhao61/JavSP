@@ -28,12 +28,17 @@ def parse_data(movie: MovieInfo):
     """
     url = f'{base_url}/{movie.dvdid}'
     resp = request_get(url, delay_raise=True)
-    if resp.status_code == 404:
+    # 疑似JavBus检测到类似爬虫的行为时会要求登录，不过发现目前不需要登录也可以从重定向前的网页中提取信息
+    if resp.history and resp.history[0].status_code == 302:
+        html = resp2html(resp.history[0])
+    else:
+        html = resp2html(resp)
+    # 引入登录验证后状态码不再准确，因此还要额外通过检测标题来确认是否发生了404
+    page_title = html.xpath('/html/head/title/text()')
+    if page_title and page_title[0].startswith('404 Page Not Found!'):
         raise MovieNotFoundError(__name__, movie.dvdid)
-    resp.raise_for_status()
-    html = resp2html(resp)
 
-    container = html.xpath("/html/body/div[@class='container']")[0]
+    container = html.xpath("//div[@class='container']")[0]
     title = container.xpath("h3/text()")[0]
     cover = container.xpath("//a[@class='bigImage']/img/@src")[0]
     preview_pics = container.xpath("//div[@id='sample-waterfall']/a/@href")
@@ -44,7 +49,11 @@ def parse_data(movie: MovieInfo):
     director_tag = info.xpath("p/span[text()='導演:']")
     if director_tag:    # xpath没有匹配时将得到空列表
         movie.director = director_tag[0].getnext().text.strip()
-    producer = info.xpath("p/span[text()='製作商:']")[0].getnext().text.strip()
+    producer_tag = info.xpath("p/span[text()='製作商:']")
+    if producer_tag:
+        text = producer_tag[0].getnext().text
+        if text:
+            movie.producer = text.strip()
     publisher_tag = info.xpath("p/span[text()='發行商:']")
     if publisher_tag:
         movie.publisher = publisher_tag[0].getnext().text.strip()
@@ -83,7 +92,6 @@ def parse_data(movie: MovieInfo):
     if publish_date != '0000-00-00':    # 丢弃无效的发布日期
         movie.publish_date = publish_date
     movie.duration = duration if int(duration) else None
-    movie.producer = producer
     movie.genre = genre
     movie.genre_id = genre_id
     movie.actress = actress
@@ -102,7 +110,7 @@ if __name__ == "__main__":
     pretty_errors.configure(display_link=True)
     logger.root.handlers[1].level = logging.DEBUG
 
-    movie = MovieInfo('130614-KEIKO')
+    movie = MovieInfo('NANP-030')
     try:
         parse_clean_data(movie)
         print(movie)

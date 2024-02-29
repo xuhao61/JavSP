@@ -3,23 +3,20 @@ import os
 import csv
 import sys
 import json
+import shutil
 import logging
+from functools import cached_property
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from core.lib import mei_path, detect_special_attr
 
 
 logger = logging.getLogger(__name__)
 filemove_logger = logging.getLogger('filemove')
 
 
-def mei_path(path):
-    """获取一个随代码打包的文件在解压后的路径"""
-    if getattr(sys, 'frozen', False):
-        return os.path.join(sys._MEIPASS, path)
-    else:
-        return path
-
-
 class MovieInfo:
-    def __init__(self, dvdid=None, /, *, cid=None, from_file=None):
+    def __init__(self, dvdid: str = None, /, *, cid: str = None, from_file=None):
         """
         Args:
             dvdid ([str], optional): 番号，要通过其他方式创建实例时此参数应留空
@@ -120,6 +117,27 @@ class Movie:
         self.fanart_file = None         # fanart文件的路径
         self.poster_file = None         # poster文件的路径
 
+    @cached_property
+    def hard_sub(self) -> bool:
+        """影片文件带有内嵌字幕"""
+        return 'C' in self.attr_str
+
+    @cached_property
+    def uncensored(self) -> bool:
+        """影片文件是无码流出/无码破解版本（很多种子并不严格区分这两种，故这里也不进一步细分）"""
+        return 'U' in self.attr_str
+
+    @cached_property
+    def attr_str(self) -> str:
+        """用来标示影片文件的额外属性的字符串(空字符串/-U/-C/-UC)"""
+        # 暂不支持多分片的影片
+        if len(self.files) != 1:
+            return ''
+        r = detect_special_attr(self.files[0], self.dvdid)
+        if r:
+            r = '-' + r
+        return r
+
     def __repr__(self) -> str:
         if self.cid and self.data_src == 'cid':
             expression = f"('cid={self.cid}')"
@@ -132,7 +150,7 @@ class Movie:
         def move_file(src:str, dst:str):
             """移动（重命名）文件并记录信息到日志"""
             abs_dst = os.path.abspath(dst)
-            os.rename(src, abs_dst)
+            shutil.move(src, abs_dst)
             src_rel = os.path.relpath(src)
             dst_name = os.path.basename(dst)
             logger.info(f"重命名文件: '{src_rel}' -> '...{os.sep}{dst_name}'")

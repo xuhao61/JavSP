@@ -6,6 +6,9 @@ import logging
 import requests
 import threading
 from shutil import copyfile
+from typing import Dict, List
+
+sys.stdout.reconfigure(encoding='utf-8')
 
 import colorama
 import pretty_errors
@@ -51,9 +54,9 @@ def import_crawlers(cfg):
         for name in mods:
             try:
                 # 导入fc2fan抓取器的前提: 配置了fc2fan的本地路径
-                if name == 'fc2fan' and (not os.path.isdir(cfg.Crawler.fc2fan_local_path)):
-                    logger.debug('由于未配置有效的fc2fan路径，已跳过该抓取器')
-                    continue
+                # if name == 'fc2fan' and (not os.path.isdir(cfg.Crawler.fc2fan_local_path)):
+                #     logger.debug('由于未配置有效的fc2fan路径，已跳过该抓取器')
+                #     continue
                 import_name = 'web.' + name
                 __import__(import_name)
                 valid_mods.append(import_name)  # 抓取器有效: 使用完整模块路径，便于程序实际使用
@@ -75,7 +78,7 @@ def parallel_crawler(movie: Movie, tqdm_bar=None):
             try:
                 parser(info)
                 movie_id = info.dvdid or info.cid
-                logger.debug(f"{crawler_name}: 抓取成功: '{movie_id}'")
+                logger.debug(f"{crawler_name}: 抓取成功: '{movie_id}': '{info.url}'")
                 setattr(info, 'success', True)
                 if isinstance(tqdm_bar, tqdm):
                     tqdm_bar.set_description(f'{crawler_name}: 抓取完成')
@@ -86,7 +89,7 @@ def parallel_crawler(movie: Movie, tqdm_bar=None):
             except MovieDuplicateError as e:
                 logger.exception(e)
                 break
-            except (SiteBlocked, PermissionError, CredentialError) as e:
+            except (SiteBlocked, SitePermissionError, CredentialError) as e:
                 logger.error(e)
                 break
             except requests.exceptions.RequestException as e:
@@ -141,12 +144,12 @@ def parallel_crawler(movie: Movie, tqdm_bar=None):
     return all_info
 
 
-def info_summary(movie: Movie, all_info):
+def info_summary(movie: Movie, all_info: Dict[str, MovieInfo]):
     """汇总多个来源的在线数据生成最终数据"""
     final_info = MovieInfo(movie)
     ########## 部分字段配置了专门的选取逻辑，先处理这些字段 ##########
     # genre
-    if 'javdb' in all_info:
+    if 'javdb' in all_info and all_info['javdb'].genre:
         final_info.genre = all_info['javdb'].genre
 
     ########## 移除所有抓取器数据中，标题尾部的女优名 ##########
@@ -163,6 +166,7 @@ def info_summary(movie: Movie, all_info):
         # 遍历所有属性，如果某一属性当前值为空而爬取的数据中含有该属性，则采用爬虫的属性
         for attr in attrs:
             incoming = getattr(data, attr)
+            current = getattr(final_info, attr)
             if attr == 'cover':
                 if incoming and (incoming not in covers):
                     covers.append(incoming)
@@ -171,8 +175,11 @@ def info_summary(movie: Movie, all_info):
                 if incoming and (incoming not in big_covers):
                     big_covers.append(incoming)
                     absorbed.append(attr)
+            elif attr == 'uncensored':
+                if (current is None) and (incoming is not None):
+                    setattr(final_info, attr, incoming)
+                    absorbed.append(attr)
             else:
-                current = getattr(final_info, attr)
                 if (not current) and (incoming):
                     setattr(final_info, attr, incoming)
                     absorbed.append(attr)
@@ -195,6 +202,14 @@ def info_summary(movie: Movie, all_info):
                 final_info.dvdid = final_id
             else:
                 final_info.cid = final_id
+    # javdb封面有水印，优先采用其他站点的封面
+    javdb_cover = getattr(all_info.get('javdb'), 'cover', None)
+    if javdb_cover is not None:
+        if cfg.Crawler.ignore_javdb_cover == 'auto':
+            covers.remove(javdb_cover)
+            covers.append(javdb_cover)
+        elif cfg.getboolean('Crawler', 'ignore_javdb_cover'):
+            covers.remove(javdb_cover)
     setattr(final_info, 'covers', covers)
     setattr(final_info, 'big_covers', big_covers)
     # 对cover和big_cover赋值，避免后续检查必须字段时出错
@@ -203,6 +218,13 @@ def info_summary(movie: Movie, all_info):
     if big_covers:
         final_info.big_cover = big_covers[0]
     ########## 部分字段放在最后进行检查 ##########
+    # 特殊的 genre
+    if final_info.genre is None:
+        final_info.genre = []
+    if movie.hard_sub:
+        final_info.genre.append('内嵌字幕')
+    if movie.uncensored:
+        final_info.genre.append('无码流出/破解')
     # title
     if cfg.Crawler.title__chinese_first and 'airav' in all_info:
         if all_info['airav'].title and final_info.title != all_info['airav'].title:
@@ -226,13 +248,14 @@ def generate_names(movie: Movie):
     d['num'] = info.dvdid or info.cid
     d['title'] = info.title or cfg.NamingRule.null_for_title
     d['rawtitle'] = info.ori_title or d['title']
-    if info.actress and len(info.actress) > cfg.NamingRule.max_acctress_count:
+    if info.actress and len(info.actress) > cfg.NamingRule.max_actress_count:
         logging.debug('女优人数过多，按配置保留了其中的前n个: ' + ','.join(info.actress))
-        actress = info.actress[:cfg.NamingRule.max_acctress_count] + ['…']
+        actress = info.actress[:cfg.NamingRule.max_actress_count] + ['…']
     else:
         actress = info.actress
     d['actress'] = ','.join(actress) if actress else cfg.NamingRule.null_for_actress
     d['score'] = info.score or '0'
+    d['censor'] = cfg.NamingRule.censorship_names[info.uncensored]
     d['serial'] = info.serial or cfg.NamingRule.null_for_serial
     d['director'] = info.director or cfg.NamingRule.null_for_director
     d['producer'] = info.producer or cfg.NamingRule.null_for_producer
@@ -263,20 +286,30 @@ def generate_names(movie: Movie):
     else:
         ori_title_break = split_by_punc(d['rawtitle'])
     copyd = d.copy()
+    copyd['num'] = copyd['num'] + movie.attr_str
+    longest_ext = max((os.path.splitext(i)[1] for i in movie.files), key=len)
     for end in range(len(ori_title_break), 0, -1):
         copyd['rawtitle'] = replace_illegal_chars(''.join(ori_title_break[:end]).strip())
         for sub_end in range(len(title_break), 0, -1):
             copyd['title'] = replace_illegal_chars(''.join(title_break[:sub_end]).strip())
             save_dir = os.path.normpath(cfg.NamingRule.save_dir.substitute(copyd)).strip()
             basename = os.path.normpath(cfg.NamingRule.filename.substitute(copyd).strip())
-            fanart_file = os.path.join(save_dir, f'{basename}{cdx}-fanart.jpg')
-            remaining = get_remaining_path_len(os.path.abspath(fanart_file))
+            if 'universal' in cfg.NamingRule.media_servers:
+                long_path = os.path.join(save_dir, basename+longest_ext)
+            else:
+                long_path = os.path.join(save_dir, f'{basename}{cdx}-fanart.jpg')
+            remaining = get_remaining_path_len(os.path.abspath(long_path))
             if remaining > 0:
                 movie.save_dir = save_dir
                 movie.basename = basename
-                movie.nfo_file = os.path.join(save_dir, f'{basename}{cdx}.nfo')
-                movie.fanart_file = fanart_file
-                movie.poster_file = os.path.join(save_dir, f'{basename}{cdx}-poster.jpg')
+                if 'universal' in cfg.NamingRule.media_servers:
+                    movie.nfo_file = os.path.join(save_dir, 'movie.nfo')
+                    movie.fanart_file = os.path.join(save_dir, 'fanart.jpg')
+                    movie.poster_file = os.path.join(save_dir, 'poster.jpg')
+                else:
+                    movie.nfo_file = os.path.join(save_dir, f'{basename}{cdx}.nfo')
+                    movie.fanart_file = os.path.join(save_dir, f'{basename}{cdx}-fanart.jpg')
+                    movie.poster_file = os.path.join(save_dir, f'{basename}{cdx}-poster.jpg')
                 if d['title'] != copyd['title']:
                     logger.info(f"自动截短标题为:\n{copyd['title']}")
                 if d['rawtitle'] != copyd['rawtitle']:
@@ -288,15 +321,20 @@ def generate_names(movie: Movie):
         copyd['title'] = copyd['title'][:remaining]
         copyd['rawtitle'] = copyd['rawtitle'][:remaining]
         if (copyd['title'] == '' and '$title' in templates) or (copyd['rawtitle'] == '' and '$rawtitle' in templates):
-            logger.error("命名规则导致标题被截断至空，请增大'max_path_len'或减小'max_acctress_count'配置项后重试")
+            logger.error("命名规则导致标题被截断至空，请增大'max_path_len'或减小'max_actress_count'配置项后重试")
             logger.debug((d, templates, cfg.NamingRule.max_path_len))
             return
         save_dir = os.path.normpath(cfg.NamingRule.save_dir.substitute(copyd)).strip()
         movie.save_dir = save_dir
         movie.basename = os.path.normpath(cfg.NamingRule.filename.substitute(copyd)).strip()
-        movie.nfo_file = os.path.join(save_dir, f'{basename}{cdx}.nfo')
-        movie.fanart_file = os.path.join(save_dir, f'{basename}{cdx}-fanart.jpg')
-        movie.poster_file = os.path.join(save_dir, f'{basename}{cdx}-poster.jpg')
+        if 'universal' in cfg.NamingRule.media_servers:
+            movie.nfo_file = os.path.join(save_dir, 'movie.nfo')
+            movie.fanart_file = os.path.join(save_dir, 'fanart.jpg')
+            movie.poster_file = os.path.join(save_dir, 'poster.jpg')
+        else:
+            movie.nfo_file = os.path.join(save_dir, f'{basename}{cdx}.nfo')
+            movie.fanart_file = os.path.join(save_dir, f'{basename}{cdx}-fanart.jpg')
+            movie.poster_file = os.path.join(save_dir, f'{basename}{cdx}-poster.jpg')
         if d['title'] != copyd['title']:
             logger.info(f"自动截短标题为:\n{copyd['title']}")
         if d['rawtitle'] != copyd['rawtitle']:
@@ -359,7 +397,7 @@ def reviewMovieID(all_movies, root):
 
 def crop_poster_wrapper(fanart_file, poster_file, method='normal'):
     """包装各种海报裁剪方法，提供统一的调用"""
-    if cfg.Picture.ai_engine == 'baidu':
+    if method == 'baidu':
         try:
             aip_crop_poster(fanart_file, poster_file)
         except Exception as e:
@@ -438,7 +476,7 @@ def RunNormalMode(all_movies):
 
             if 'video_station' in cfg.NamingRule.media_servers:
                 postStep_videostation(movie)
-            if len(movie.files) > 1:
+            if len(movie.files) > 1 and 'universal' not in cfg.NamingRule.media_servers:
                 postStep_MultiMoviePoster(movie)
 
             inner_bar.set_description('写入NFO')
@@ -450,6 +488,10 @@ def RunNormalMode(all_movies):
             check_step(True)
 
             logger.info(f'整理完成，相关文件已保存到: {movie.save_dir}\n')
+
+            if movie != all_movies[-1] and cfg.Crawler.sleep_after_scraping > 0:
+                time.sleep(cfg.Crawler.sleep_after_scraping)
+
         except Exception as e:
             logger.debug(e, exc_info=True)
             logger.error(f'整理失败: {e}')

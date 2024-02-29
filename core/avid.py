@@ -26,6 +26,14 @@ def get_id(filepath: str) -> str:
         match = re.search(r'(heydouga)[-_]*(\d{4})[-_]0?(\d{3,5})', filename, re.I)
         if match:
             return '-'.join(match.groups())
+    elif 'getchu' in filename_lc:
+        match = re.search(r'getchu[-_]*(\d+)', filename, re.I)
+        if match:
+            return 'GETCHU-' + match.group(1)
+    elif 'gyutto' in filename_lc:
+        match = re.search(r'gyutto-(\d+)', filename, re.I)
+        if match:
+            return 'GYUTTO-' + match.group(1)
     else:
         # 先尝试移除可疑域名进行匹配，如果匹配不到再使用原始文件名进行匹配
         no_domain = re.sub(r'\w{3,10}\.(com|net|app|xyz)', '', filename, flags=re.I)
@@ -37,6 +45,18 @@ def get_id(filepath: str) -> str:
         match = re.search(r'(?:hey)[-_]*(\d{4})[-_]0?(\d{3,5})', filename, re.I)
         if match:
             return 'heydouga-' + '-'.join(match.groups())
+        # 匹配片商 MUGEN 的奇怪番号。由于MK3D2DBD的模式，要放在普通番号模式之前进行匹配
+        match = re.search(r'(MKB?D)[-_]*(S\d{2,3})|(MK3D2DBD|S2M|S2MBD)[-_]*(\d{2,3})', filename, re.I)
+        if match:
+            if match.group(1) is not None:
+                avid = match.group(1) + '-' + match.group(2)
+            else:
+                avid = match.group(3) + '-' + match.group(4)
+            return avid
+        # 匹配IBW这样带有后缀z的番号
+        match = re.search(r'(IBW)[-_](\d{2,5}z)', filename, re.I)
+        if match:
+            return match.group(1) + '-' + match.group(2)
         # 普通番号，优先尝试匹配带分隔符的（如ABC-123）
         match = re.search(r'([a-z]{2,10})[-_](\d{2,5})', filename, re.I)
         if match:
@@ -71,8 +91,9 @@ def get_id(filepath: str) -> str:
     # 如果最后仍然匹配不了番号，则尝试使用文件所在文件夹的名字去匹配
     if os.path.isfile(filepath):
         norm = os.path.normpath(filepath)
-        folder = norm.split(os.sep)[-2]
-        return get_id(folder)
+        if os.sep in norm:
+            folder = norm.split(os.sep)[-2]
+            return get_id(folder)
     return ''
 
 
@@ -92,12 +113,12 @@ def get_cid(filepath: str) -> str:
                 return possible
         else:
             # 绝大多数都只有一个下划线（只有约万分之一带有两个下划线）
-            match = re.match(r'''^h_\d{3,4}[a-z]{1,10}\d{4,5}[a-z\d]{0,8}$  # 约 99.17%
+            match2 = re.match(r'''^h_\d{3,4}[a-z]{1,10}\d{2,5}[a-z\d]{0,8}$  # 约 99.17%
                                 |^\d{3}_\d{4,5}$                            # 约 0.57%
                                 |^402[a-z]{3,6}\d*_[a-z]{3,8}\d{5,6}$       # 约 0.09%
                                 |^h_\d{3,4}wvr\d\w\d{4,5}[a-z\d]{0,8}$      # 约 0.06%
                                  $''', possible, re.VERBOSE)
-            if match:
+            if match2:
                 return possible
     return ''
 
@@ -107,6 +128,12 @@ def guess_av_type(avid: str) -> str:
     match = re.match(r'^FC2-\d{5,7}$', avid, re.I)
     if match:
         return 'fc2'
+    match = re.match(r'^GETCHU-(\d+)',avid,re.I)
+    if match:
+        return 'getchu'
+    match = re.match(r'^GYUTTO-(\d+)',avid,re.I)
+    if match:
+        return 'gyutto'
     # 如果传入的avid完全匹配cid的模式，则将影片归类为cid
     cid = get_cid(avid)
     if cid == avid:
@@ -121,7 +148,7 @@ if __name__ == "__main__":
     pretty_errors.configure(display_link=True)
     if len(sys.argv) <= 1:
         avid = get_id('ex0001')
-        cid = get_cid('403ksxa54363_1')
+        cid = get_cid('h_826zizd021')
         print(avid, cid)
     else:
         for file in sys.argv[1:]:

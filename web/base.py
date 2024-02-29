@@ -21,7 +21,7 @@ from core.config import cfg
 __all__ = ['Request', 'get_html', 'post_html', 'request_get', 'resp2html', 'is_connectable', 'download', 'get_resp_text']
 
 
-headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36'}
+headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'}
 
 logger = logging.getLogger(__name__)
 # 删除js脚本相关的tag，避免网页检测到没有js运行环境时强行跳转，影响调试
@@ -120,19 +120,19 @@ def get_resp_text(resp: Response, encoding=None):
     return resp.text
 
 
-def get_html(url):
+def get_html(url, encoding='utf-8'):
     """使用get方法访问指定网页并返回经lxml解析后的document"""
     resp = request_get(url)
-    text = get_resp_text(resp, encoding='utf-8')
+    text = get_resp_text(resp, encoding=encoding)
     html = lxml.html.fromstring(text)
     html.make_links_absolute(url, resolve_base_href=True)
     # 清理功能仅应在需要的时候用来调试网页（如prestige），否则可能反过来影响调试（如JavBus）
     # html = cleaner.clean_html(html)
-    # lxml.html.open_in_browser(html, encoding='utf-8')  # for develop and debug
+    # lxml.html.open_in_browser(html, encoding=encoding)  # for develop and debug
     return html
 
 
-def resp2html(resp, encoding='utf-8'):
+def resp2html(resp, encoding='utf-8') -> lxml.html.HtmlComment:
     """将request返回的response转换为经lxml解析后的document"""
     text = get_resp_text(resp, encoding=encoding)
     html = lxml.html.fromstring(text)

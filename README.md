@@ -6,10 +6,14 @@
 
 提取影片文件名中的番号信息，自动抓取并汇总多个站点数据的 AV 元数据，按照指定的规则分类整理影片文件，并创建供 Emby、Jellyfin、Kodi 等软件使用的元数据文件
 
+**Docker & WebUI**: 由于精力所限，目前还没有做Docker的支持。此外，UI界面也不是[此项目的目标](https://github.com/Yuukiy/JavSP/issues/148)。如果你需要这两个功能，可以试试[@tetato/JavSP-Docker](https://github.com/tetato/JavSP-Docker)
+
+**i18n**: This project currently supports only Chinese. However, if you're willing, you can [vote here](https://github.com/Yuukiy/JavSP/discussions/157) for the language you'd like to see added
+
 ![License](https://img.shields.io/github/license/Yuukiy/JavSP)
 [![LICENSE](https://img.shields.io/badge/license-Anti%20996-blue.svg)](https://github.com/996icu/996.ICU/blob/master/LICENSE)
 ![Python 3.8](https://img.shields.io/badge/python-3.8-green.svg)
-[![Crawlers test](https://img.shields.io/github/workflow/status/Yuukiy/JavSP/Unit%20Test:%20web-based%20functions?label=crawlers%20test)](https://github.com/Yuukiy/JavSP/actions/workflows/test-web-funcs.yml)
+[![Crawlers test](https://img.shields.io/github/actions/workflow/status/Yuukiy/JavSP/test-web-funcs.yml?label=crawlers%20test)](https://github.com/Yuukiy/JavSP/actions/workflows/test-web-funcs.yml)
 [![Latest release](https://img.shields.io/github/v/release/Yuukiy/JavSP)](https://github.com/Yuukiy/JavSP/releases/latest)
 [![996.icu](https://img.shields.io/badge/link-996.icu-red.svg)](https://996.icu)
 
@@ -71,7 +75,7 @@
 
 - 帮助撰写和改进Wiki
 
-- 帮助完善单元测试数据
+- 帮助完善单元测试数据（不必非要写代码，例如如果你发现有某系列的番号识别不准确，总结一下提issue也是很好的）
 
 - 帮助翻译 genre
 
@@ -91,3 +95,8 @@
 - 用户在使用本软件时，请遵守当地法律法规
 
 - 禁止将本软件用于商业用途
+
+
+---
+
+![Star History Chart](https://api.star-history.com/svg?repos=Yuukiy/JavSP&type=Date)

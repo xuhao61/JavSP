@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from web.base import Request, resp2html
 from web.exceptions import *
 from core.func import *
+from core.avid import guess_av_type
 from core.config import cfg
 from core.datatype import MovieInfo, GenreMap
 from core.chromium import get_browsers_cookies
@@ -37,9 +38,11 @@ def get_html_wrapper(url):
             if 'cookies_pool' not in globals():
                 try:
                     cookies_pool = get_browsers_cookies()
+                except (PermissionError, OSError) as e:
+                    logger.warning(f"无法从浏览器Cookies文件获取JavDB的登录凭据({e})，可能是安全软件在保护浏览器Cookies文件", exc_info=True)
+                    cookies_pool = []
                 except Exception as e:
-                    logger.warning('获取JavDB的登录凭据时出错，你可能使用的是国内定制版等非官方Chrome系浏览器')
-                    logger.debug(e, exc_info=True)
+                    logger.warning(f"获取JavDB的登录凭据时出错({e})，你可能使用的是国内定制版等非官方Chrome系浏览器", exc_info=True)
                     cookies_pool = []
             if len(cookies_pool) > 0:
                 item = cookies_pool.pop()
@@ -51,8 +54,8 @@ def get_html_wrapper(url):
                 return get_html_wrapper(url)
             else:
                 raise CredentialError('JavDB: 所有浏览器Cookies均已过期')
-        elif r.history and '/sfpay' in r.url:
-            raise PermissionError(f"JavDB: 此资源被限制为仅VIP可见: '{r.history[0].url}'")
+        elif r.history and 'pay' in r.url.split('/')[-1]:
+            raise SitePermissionError(f"JavDB: 此资源被限制为仅VIP可见: '{r.history[0].url}'")
         else:
             html = resp2html(r)
             return html
@@ -114,14 +117,30 @@ def parse_data(movie: MovieInfo):
     if match_count == 0:
         raise MovieNotFoundError(__name__, movie.dvdid, ids)
     elif match_count == 1:
-        new_url = movie_urls[ids.index(movie.dvdid.lower())]
+        index = ids.index(movie.dvdid.lower())
+        new_url = movie_urls[index]
+        try:
+            html2 = get_html_wrapper(new_url)
+        except (SitePermissionError, CredentialError):
+            # 不开VIP不让看，过分。决定榨出能获得的信息，毕竟有时候只有这里能找到标题和封面
+            box = html.xpath("//a[@class='box']")[index]
+            movie.url = new_url
+            movie.title = box.get('title')
+            movie.cover = box.xpath("div/img/@src")[0]
+            score_str = box.xpath("div[@class='score']/span/span")[0].tail
+            score = re.search(r'([\d.]+)分', score_str).group(1)
+            movie.score = "{:.2f}".format(float(score)*2)
+            movie.publish_date = box.xpath("div[@class='meta']/text()")[0].strip()
+            return
     else:
         raise MovieDuplicateError(__name__, movie.dvdid, match_count)
 
-    html = get_html_wrapper(new_url)
-    container = html.xpath("/html/body/section/div/div[@class='video-detail']")[0]
+    container = html2.xpath("/html/body/section/div/div[@class='video-detail']")[0]
     info = container.xpath("//nav[@class='panel movie-panel-info']")[0]
-    title = container.xpath("h2/strong/text()")[0]
+    title = container.xpath("h2/strong[@class='current-title']/text()")[0]
+    show_orig_title = container.xpath("//a[contains(@class, 'meta-link') and not(contains(@style, 'display: none'))]")
+    if show_orig_title:
+        movie.ori_title = container.xpath("h2/span[@class='origin-title']/text()")[0]
     cover = container.xpath("//img[@class='video-cover']/@src")[0]
     preview_pics = container.xpath("//a[@class='tile-item'][@data-fancybox='gallery']/@href")
     preview_video_tag = container.xpath("//video[@id='preview-video']/source/@src")
@@ -136,7 +155,11 @@ def parse_data(movie: MovieInfo):
     director_tag = info.xpath("div/strong[text()='導演:']")
     if director_tag:
         movie.director = director_tag[0].getnext().text_content().strip()
-    producer_tag = info.xpath("div/strong[text()='片商:']")
+    av_type = guess_av_type(movie.dvdid)
+    if av_type != 'fc2':
+        producer_tag = info.xpath("div/strong[text()='片商:']")
+    else:
+        producer_tag = info.xpath("div/strong[text()='賣家:']")
     if producer_tag:
         movie.producer = producer_tag[0].getnext().text_content().strip()
     publisher_tag = info.xpath("div/strong[text()='發行:']")
@@ -144,7 +167,7 @@ def parse_data(movie: MovieInfo):
         movie.publisher = publisher_tag[0].getnext().text_content().strip()
     serial_tag = info.xpath("div/strong[text()='系列:']")
     if serial_tag:
-        movie.serial = serial_tag[0].getnext().text
+        movie.serial = serial_tag[0].getnext().text_content().strip()
     score_tag = info.xpath("//span[@class='score-stars']")
     if score_tag:
         score_str = score_tag[0].tail
@@ -186,8 +209,9 @@ def parse_clean_data(movie: MovieInfo):
     except SiteBlocked:
         raise
         logger.error('JavDB: 可能触发了反爬虫机制，请稍后再试')
-    movie.genre_norm = genre_map.map(movie.genre_id)
-    movie.genre_id = None   # 没有别的地方需要再用到，清空genre id（表明已经完成转换）
+    if movie.genre_id and (not movie.genre_id[0].startswith('fc2?')):
+        movie.genre_norm = genre_map.map(movie.genre_id)
+        movie.genre_id = None   # 没有别的地方需要再用到，清空genre id（表明已经完成转换）
 
 
 if __name__ == "__main__":
@@ -195,7 +219,7 @@ if __name__ == "__main__":
     pretty_errors.configure(display_link=True)
     logger.root.handlers[1].level = logging.DEBUG
 
-    movie = MovieInfo('FC2-718323')
+    movie = MovieInfo('JUQ-471')
     try:
         parse_clean_data(movie)
         print(movie)
