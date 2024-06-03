@@ -4,7 +4,7 @@ import logging
 from PIL import Image, ImageOps
 
 
-__all__ = ['valid_pic', 'crop_poster', 'get_pic_size']
+__all__ = ['valid_pic', 'crop_poster', 'get_pic_size', 'add_label_to_poster']
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,16 @@ def crop_poster(fanart_file, poster_file):
     if poster.mode != 'RGB':
         poster = poster.convert('RGB')
     # quality: from doc, default is 75, values above 95 should be avoided
+    poster.save(poster_file, quality=95)
+
+
+def add_label_to_poster(poster_file, mark_pic_file):
+    """向poster中添加标签(水印)"""
+    poster = Image.open(poster_file)
+    mark_img = Image.open(mark_pic_file).convert('RGBA')
+    r,g,b,a = mark_img.split()
+    box = (poster.size[0] - mark_img.size[0], poster.size[1] - mark_img.size[1])
+    poster.paste(mark_img, box=box, mask=a)
     poster.save(poster_file, quality=95)
 
 

@@ -1,6 +1,7 @@
 import os
 import re
 import sys
+import json
 import time
 import logging
 import requests
@@ -20,7 +21,6 @@ pretty_errors.configure(display_link=True)
 
 
 from core.print import TqdmOut
-from core.baidu_aip import aip_crop_poster
 
 
 # 将StreamHandler的stream修改为TqdmOut，以与Tqdm协同工作
@@ -32,6 +32,7 @@ for handler in root_logger.handlers:
 logger = logging.getLogger('main')
 
 
+from core.lib import mei_path
 from core.nfo import write_nfo
 from core.config import cfg, args
 from core.file import *
@@ -41,6 +42,20 @@ from core.datatype import Movie, MovieInfo
 from web.base import download
 from web.exceptions import *
 from web.translate import translate_movie_info
+
+actressAliasMap = {}
+if cfg.NFO.fix_actress_name:
+    actressAliasFilePath = mei_path("data/actress_alias.json")
+    with open(actressAliasFilePath, "r", encoding="utf-8") as file:
+        actressAliasMap = json.load(file)
+
+
+def resolve_alias(name):
+    """将别名解析为固定的名字"""
+    for fixedName, aliases in actressAliasMap.items():
+        if name in aliases:
+            return fixedName
+    return name  # 如果找不到别名对应的固定名字，则返回原名
 
 
 def import_crawlers(cfg):
@@ -229,7 +244,15 @@ def info_summary(movie: Movie, all_info: Dict[str, MovieInfo]):
     if cfg.Crawler.title__chinese_first and 'airav' in all_info:
         if all_info['airav'].title and final_info.title != all_info['airav'].title:
             final_info.ori_title = final_info.title
-            final_info.title = all_info['airav'].title
+
+    # 女优别名固定
+    if cfg.NFO.fix_actress_name and bool(final_info.actress_pics):
+        final_info.actress = [resolve_alias(i) for i in final_info.actress]
+        if final_info.actress_pics:
+            final_info.actress_pics = {
+                resolve_alias(key): value for key, value in final_info.actress_pics.items()
+            }
+
     # 检查是否所有必需的字段都已经获得了值
     for attr in cfg.Crawler.required_keys:
         if not getattr(final_info, attr, None):
@@ -274,7 +297,7 @@ def generate_names(movie: Movie):
     # 生成nfo文件中的影片标题
     nfo_title = cfg.NamingRule.nfo_title.substitute(**d)
     setattr(info, 'nfo_title', nfo_title)
-
+    
     # 使用字典填充模板，生成相关文件的路径（多分片影片要考虑CD-x部分）
     cdx = '' if len(movie.files) <= 1 else '-CD1'
     if hasattr(info, 'title_break'):
@@ -292,8 +315,15 @@ def generate_names(movie: Movie):
         copyd['rawtitle'] = replace_illegal_chars(''.join(ori_title_break[:end]).strip())
         for sub_end in range(len(title_break), 0, -1):
             copyd['title'] = replace_illegal_chars(''.join(title_break[:sub_end]).strip())
-            save_dir = os.path.normpath(cfg.NamingRule.save_dir.substitute(copyd)).strip()
-            basename = os.path.normpath(cfg.NamingRule.filename.substitute(copyd).strip())
+            # 如果不整理文件，则保存抓取的数据到当前目录
+            if cfg.File.enable_file_move is False:
+                save_dir = os.path.dirname(movie.files[0])
+                filebasename = os.path.basename(movie.files[0])
+                ext = os.path.splitext(filebasename)[1]
+                basename = filebasename.replace(ext, '')
+            else:
+                save_dir = os.path.normpath(cfg.NamingRule.save_dir.substitute(copyd)).strip()
+                basename = os.path.normpath(cfg.NamingRule.filename.substitute(copyd).strip())
             if 'universal' in cfg.NamingRule.media_servers:
                 long_path = os.path.join(save_dir, basename+longest_ext)
             else:
@@ -324,9 +354,17 @@ def generate_names(movie: Movie):
             logger.error("命名规则导致标题被截断至空，请增大'max_path_len'或减小'max_actress_count'配置项后重试")
             logger.debug((d, templates, cfg.NamingRule.max_path_len))
             return
-        save_dir = os.path.normpath(cfg.NamingRule.save_dir.substitute(copyd)).strip()
+        # 如果不整理文件，则保存抓取的数据到当前目录
+        if cfg.File.enable_file_move is False:
+            save_dir = os.path.dirname(movie.files[0])
+            filebasename = os.path.basename(movie.files[0])
+            ext = os.path.splitext(filebasename)[1]
+            basename = filebasename.replace(ext, '')
+        else:
+            save_dir = os.path.normpath(cfg.NamingRule.save_dir.substitute(copyd)).strip()
+            basename = os.path.normpath(cfg.NamingRule.filename.substitute(copyd)).strip()
         movie.save_dir = save_dir
-        movie.basename = os.path.normpath(cfg.NamingRule.filename.substitute(copyd)).strip()
+        movie.basename = basename
         if 'universal' in cfg.NamingRule.media_servers:
             movie.nfo_file = os.path.join(save_dir, 'movie.nfo')
             movie.fanart_file = os.path.join(save_dir, 'fanart.jpg')
@@ -357,6 +395,8 @@ def postStep_MultiMoviePoster(movie: Movie):
     """为多分片的影片创建额外的poster图片"""
     # Jellyfin将多分片影片视作CD1的附加部分，nfo文件名、fanart均使用的CD1的文件名，
     # 只有poster是为各个分片创建的
+    # Jellyfin 10.8.9版本, 经测试分片可以自动使用poster.jpg，不必为每个分片创建单独的poster
+    return
     for i, _ in enumerate(movie.files[1:], start=2):
         cdx_poster = os.path.join(movie.save_dir, f'{movie.basename}-CD{i}-poster.jpg')
         copyfile(movie.poster_file, cdx_poster)
@@ -395,17 +435,30 @@ def reviewMovieID(all_movies, root):
         print()
 
 
-def crop_poster_wrapper(fanart_file, poster_file, method='normal'):
+SUBTITLE_MARK_FILE = os.path.abspath(mei_path('image/sub_mark.png'))
+def crop_poster_wrapper(fanart_file, poster_file, method='normal', hard_sub=False):
     """包装各种海报裁剪方法，提供统一的调用"""
     if method == 'baidu':
+        from core.ai_crop.baidu_aip import aip_crop_poster
         try:
             aip_crop_poster(fanart_file, poster_file)
         except Exception as e:
             logger.debug('人脸识别失败，回退到常规裁剪方法')
             logger.debug(e, exc_info=True)
             crop_poster(fanart_file, poster_file)
+    elif method == 'retina':
+        from core.ai_crop.retina import ai_crop_poster
+        try:
+            ai_crop_poster(fanart_file, poster_file)
+        except Exception as e:
+            logger.debug('人脸识别失败，回退到常规裁剪方法')
+            logger.debug(e, exc_info=True)
+            crop_poster(fanart_file, poster_file)
     else:
         crop_poster(fanart_file, poster_file)
+    if cfg.Picture.add_label_to_cover:
+        if hard_sub == True:
+            add_label_to_poster(poster_file, SUBTITLE_MARK_FILE)
 
 
 def RunNormalMode(all_movies):
@@ -419,6 +472,7 @@ def RunNormalMode(all_movies):
 
     outer_bar = tqdm(all_movies, desc='整理影片', ascii=True, leave=False)
     total_step = 7 if cfg.Translate.engine else 6
+    return_movies = []
     for movie in outer_bar:
         try:
             # 初始化本次循环要整理影片任务
@@ -471,7 +525,7 @@ def RunNormalMode(all_movies):
             else:
                 inner_bar.set_description('裁剪海报封面')
                 method = 'normal'
-            crop_poster_wrapper(movie.fanart_file, movie.poster_file, method)
+            crop_poster_wrapper(movie.fanart_file, movie.poster_file, method, movie.hard_sub)
             check_step(True)
 
             if 'video_station' in cfg.NamingRule.media_servers:
@@ -482,21 +536,23 @@ def RunNormalMode(all_movies):
             inner_bar.set_description('写入NFO')
             write_nfo(movie.info, movie.nfo_file)
             check_step(True)
-
-            inner_bar.set_description('移动影片文件')
-            movie.rename_files()
-            check_step(True)
-
-            logger.info(f'整理完成，相关文件已保存到: {movie.save_dir}\n')
+            if cfg.File.enable_file_move:
+                inner_bar.set_description('移动影片文件')
+                movie.rename_files()
+                check_step(True)
+                logger.info(f'整理完成，相关文件已保存到: {movie.save_dir}\n')
+            else:
+                logger.info(f'刮削完成，相关文件已保存到: {movie.nfo_file}\n')
 
             if movie != all_movies[-1] and cfg.Crawler.sleep_after_scraping > 0:
                 time.sleep(cfg.Crawler.sleep_after_scraping)
-
+            return_movies.append(movie)
         except Exception as e:
             logger.debug(e, exc_info=True)
             logger.error(f'整理失败: {e}')
         finally:
             inner_bar.close()
+    return return_movies
 
 
 def download_cover(covers, fanart_path, big_covers=[]):
@@ -548,11 +604,37 @@ def sys_exit(code):
     # 脚本退出机制：检查是否需要关机 → 若不需要，检查是否需要保持当前窗口
     if args.shutdown:
         shutdown()
-    elif not args.auto_exit:
+    elif not (args.auto_exit or cfg.Other.auto_exit):
         os.system('pause')
     # 最后传退出码退出
     sys.exit(code)
 
+def only_fetch():
+    # 1. 读取缓存文件
+    movie_list: List[dict] = []
+    movies: List[Movie] = []
+    with open(args.data_cache_file, encoding='utf-8') as f:
+        movie_list = json.load(f)
+    # 2. 重新实例化Movie
+    if len(movie_list) == 0:
+        return 0
+    for mov in movie_list:
+        movie = Movie(mov['dvdid'])
+        for k, v in mov.items():
+            setattr(movie, k, v)
+        movies.append(movie)
+    rmovies = RunNormalMode(movies)
+    # 将数据回写到缓存文件
+    store_movies = []
+    for m in rmovies:
+        d = m.__dict__
+        d['info'] = {'title': m.info.title}
+        store_movies.append(d)
+    json_str = json.dumps(store_movies, ensure_ascii=False)
+    # 打开文件进行写入
+    with open(args.data_cache_file, 'w', encoding='utf-8') as file:
+        file.write(json_str)  # 将数据写入文件
+    return 0
 
 if __name__ == "__main__":
     colorama.init(autoreset=True)
@@ -571,8 +653,12 @@ if __name__ == "__main__":
     import_crawlers(cfg)
     os.chdir(root)
 
+    if args.only_fetch == True:
+        #仅刮削
+        sys_exit(only_fetch())
+
     print(f'扫描影片文件...')
-    recognized = scan_movies(root)
+    recognized = scan_movies(root, args.only_scan, args.data_cache_file)
     movie_count = len(recognized)
     # 手动模式下先让用户处理无法识别番号的影片（无论是all还是failed）
     if args.manual:
@@ -585,7 +671,9 @@ if __name__ == "__main__":
         recognize_fail = []
     error_exit(movie_count, '未找到影片文件')
     logger.info(f'扫描影片文件：共找到 {movie_count} 部影片')
-    print('')
+    if args.only_scan == True:
+        #仅识别，不刮削
+        sys_exit(0)
 
     if args.manual == 'all':
         reviewMovieID(recognized, root)

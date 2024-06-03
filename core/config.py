@@ -264,9 +264,11 @@ def norm_boolean(cfg: Config):
             ('Crawler', 'title__chinese_first'),
             ('Picture', 'use_big_cover'),
             ('Picture', 'use_ai_crop'),
+            ('Picture', 'add_label_to_cover'),
             ('NFO', 'add_genre_to_tag'),
             ('Other', 'check_update'),
-            ('Other', 'auto_update')
+            ('Other', 'auto_update'),
+            ('File', 'enable_file_move'),
         ]:
         cfg._sections[sec][key] = cfg.getboolean(sec, key)
     # 特殊转换
@@ -341,6 +343,8 @@ def validate_ai_config(cfg: Config):
         empty_keys = [i for i in required_keys if not piccfg[i]]
         if empty_keys:
             logger.error('使用百度人体分析时，相关设置不能为空: ' + ', '.join(empty_keys))
+    elif piccfg.ai_engine.lower() == 'retina':
+        piccfg.ai_engine = 'retina'
     else:
         logger.error('不支持的图像识别引擎: ' + piccfg.ai_engine)
 
@@ -394,6 +398,9 @@ def parse_args():
                         help="由用户介入番号识别过程，可选值为：\n'all': 检查所有番号\n'failed': 仅检查无法识别的番号（默认）")
     parser.add_argument('-e', '--auto-exit', action='store_true', help='运行结束后自动退出')
     parser.add_argument('-s', '--shutdown', action='store_true', help='整理完成后关机')
+    parser.add_argument('--data-cache-file', help='存储数据的缓存文件，临时文件，供进程间通信使用')
+    parser.add_argument('--only-scan', action='store_true', help='仅识别，不刮削')
+    parser.add_argument('--only-fetch', action='store_true', help='仅刮削data-cache-file缓存文件中的数据')
     # 忽略无法识别的参数，避免传入供pytest使用的参数时报错
     args, unknown = parser.parse_known_args()
 
@@ -428,6 +435,8 @@ def parse_args():
         msg = f"{parser.prog}: error: argument -m/--manual: invalid choice: '{args.manual}' (choose from 'all', 'failed' or leave it empty)"
         # 使用SystemExit异常以避免显示traceback信息
         raise SystemExit(msg)
+    if (args.only_scan == True or args.only_fetch == True) and args.data_cache_file == None:
+        raise SystemExit("当仅刮削或者仅识别时，必须传入缓存文件路径")
     args.config = cfg_file
     return args
 
@@ -450,6 +459,9 @@ def overwrite_cfg(cfg, args):
         cfg.File.scan_dir = args.input
     if args.output:
         cfg.NamingRule.output_folder = args.output
+    if args.only_fetch == True:
+        # 如果仅刮削，则不会整理文件
+        cfg.File.enable_file_move = 'no'
 
 
 cfg = Config()
