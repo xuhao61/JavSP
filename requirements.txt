@@ -1,6 +1,6 @@
 altgraph==0.17
 baidu-aip==2.2.18.0
-certifi==2023.7.22
+certifi==2024.7.4
 chardet==4.0.0
 cloudscraper==1.2.71
 colorama==0.4.4
@@ -15,7 +15,7 @@ pycryptodome==3.19.1
 PySocks==1.7.1
 requests==2.32.2
 tqdm==4.66.3
-urllib3==1.26.18
+urllib3==1.26.19
 pywin32==303
 pywin32-ctypes==0.2.0
 retina-face==0.0.14
